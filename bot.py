@@ -164,18 +164,45 @@ async def cadastrar_apelido_command(update: Update, context: ContextTypes.DEFAUL
     )
 
 async def hoje_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Exibe o resumo das atividades registradas hoje (SAs + Bloco de Notas)."""
+    """Exibe o resumo das atividades registradas hoje ou em uma data específica (SAs + Bloco de Notas)."""
     user_id = update.effective_user.id
     if not eh_usuario_autorizado(user_id):
         return
 
-    hoje_str = datetime.now(TIMEZONE_BR).strftime("%Y-%m-%d")
+    data_consulta = datetime.now(TIMEZONE_BR)
+    titulo_data = data_consulta.strftime('%d/%m/%Y')
+    hoje_str = data_consulta.strftime("%Y-%m-%d")
+
+    # Suporte a argumentos: /hoje ontem ou /hoje 14/10/2026
+    args = context.args
+    if args:
+        param = args[0].lower().strip()
+        if param == "ontem":
+            from datetime import timedelta
+            data_consulta = data_consulta - timedelta(days=1)
+            hoje_str = data_consulta.strftime("%Y-%m-%d")
+            titulo_data = f"Ontem ({data_consulta.strftime('%d/%m/%Y')})"
+        else:
+            try:
+                # Tenta parsear formato DD/MM ou DD/MM/AAAA
+                partes = param.split("/")
+                if len(partes) == 2:
+                    ano = data_consulta.year
+                    d_parsed = datetime.strptime(f"{param}/{ano}", "%d/%m/%Y")
+                else:
+                    d_parsed = datetime.strptime(param, "%d/%m/%Y")
+                hoje_str = d_parsed.strftime("%Y-%m-%d")
+                titulo_data = d_parsed.strftime("%d/%m/%Y")
+            except Exception:
+                await update.message.reply_text("⚠️ Formato de data inválido! Use `/hoje`, `/hoje ontem` ou `/hoje DD/MM/AAAA`.", parse_mode=ParseMode.MARKDOWN)
+                return
+
     registros = database.obter_registros_dia(user_id, hoje_str)
     notas = database.obter_notas_dia(user_id, hoje_str)
 
     texto = reports.formatar_relatorio_texto(
         registros=registros, 
-        titulo=f"Rastro de Hoje ({datetime.now(TIMEZONE_BR).strftime('%d/%m/%Y')})",
+        titulo=f"Rastro Diário ({titulo_data})",
         notas=notas
     )
     await update.message.reply_text(texto, parse_mode=ParseMode.MARKDOWN)
@@ -579,6 +606,7 @@ def main():
     # Handlers de comandos
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("hoje", hoje_command))
+    app.add_handler(CommandHandler("dia", hoje_command))
     app.add_handler(CommandHandler("notas", notas_command))
     app.add_handler(CommandHandler("mes", mes_command))
     app.add_handler(CommandHandler("desfazer", desfazer_command))
