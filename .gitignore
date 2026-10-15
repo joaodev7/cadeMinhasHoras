@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+temp_voice_*.ogg
+temp_voice_*.oga
+*.xlsx
+horas.db
+.agent/
+
