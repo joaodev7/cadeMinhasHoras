@@ -48,6 +48,16 @@ def init_db(db_path: str = DB_PATH):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tarefas_pendentes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER NOT NULL,
+                descricao TEXT NOT NULL,
+                status TEXT DEFAULT 'pendente', -- 'pendente' ou 'concluida'
+                data_criacao TEXT NOT NULL,     -- Formato YYYY-MM-DD
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
 
 def salvar_apelido(telegram_user_id: int, apelido: str, sa_id: str, db_path: str = DB_PATH):
@@ -178,6 +188,91 @@ def obter_notas_dia(telegram_user_id: int, data_str: str, db_path: str = DB_PATH
             ORDER BY id ASC
         """, (telegram_user_id, data_str))
         return [dict(row) for row in cursor.fetchall()]
+
+# ==========================================
+# TAREFAS PENDENTES / TO-DOS
+# ==========================================
+def inserir_tarefa(telegram_user_id: int, descricao: str, data_criacao: str, db_path: str = DB_PATH) -> int:
+    """Insere uma nova tarefa pendente."""
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO tarefas_pendentes (telegram_user_id, descricao, data_criacao, status)
+            VALUES (?, ?, ?, 'pendente')
+        """, (telegram_user_id, descricao, data_criacao))
+        conn.commit()
+        return cursor.lastrowid
+
+def marcar_tarefa_concluida(tarefa_id: int, telegram_user_id: int, db_path: str = DB_PATH) -> bool:
+    """Marca uma tarefa como concluída."""
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE tarefas_pendentes SET status = 'concluida'
+            WHERE id = ? AND telegram_user_id = ?
+        """, (tarefa_id, telegram_user_id))
+        conn.commit()
+        return cursor.rowcount > 0
+
+def obter_tarefas_pendentes(telegram_user_id: int, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """Retorna todas as tarefas pendentes do usuário."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM tarefas_pendentes
+            WHERE telegram_user_id = ? AND status = 'pendente'
+            ORDER BY id ASC
+        """, (telegram_user_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+# ==========================================
+# BUSCA GERAL PARA O ASSISTENTE RESPONDER DÚVIDAS
+# ==========================================
+def buscar_historico_recente(telegram_user_id: int, limite_dias: int = 15, db_path: str = DB_PATH) -> Dict[str, Any]:
+    """Retorna os registros recentes de SAs, notas e apelidos para alimentar a memória do assistente."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Últimos registros de SAs
+        cursor.execute("""
+            SELECT data, sa_id, horas, descricao FROM registros
+            WHERE telegram_user_id = ?
+            ORDER BY data DESC, id DESC
+            LIMIT 40
+        """, (telegram_user_id,))
+        registros = [dict(r) for r in cursor.fetchall()]
+
+        # Últimas notas
+        cursor.execute("""
+            SELECT data, hora, conteudo FROM notas_diarias
+            WHERE telegram_user_id = ?
+            ORDER BY data DESC, id DESC
+            LIMIT 30
+        """, (telegram_user_id,))
+        notas = [dict(r) for r in cursor.fetchall()]
+
+        # Apelidos
+        cursor.execute("""
+            SELECT apelido, sa_id FROM sa_apelidos
+            WHERE telegram_user_id = ?
+        """, (telegram_user_id,))
+        apelidos = [dict(r) for r in cursor.fetchall()]
+
+        # Tarefas pendentes
+        cursor.execute("""
+            SELECT id, descricao, data_criacao, status FROM tarefas_pendentes
+            WHERE telegram_user_id = ? AND status = 'pendente'
+        """, (telegram_user_id,))
+        tarefas = [dict(r) for r in cursor.fetchall()]
+
+        return {
+            "registros": registros,
+            "notas": notas,
+            "apelidos": apelidos,
+            "tarefas_pendentes": tarefas
+        }
 
 # ==========================================
 # CONFIGURAÇÕES DE USUÁRIO E ALARMES

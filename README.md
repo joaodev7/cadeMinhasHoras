@@ -1,67 +1,30 @@
-# 🚀 Bot de Rastro Diário de Horas em SAs (Telegram + Gemini)
+# 🚀 CadêMinhasHoras: Seu Assistente Pessoal e Gestor de SAs (Telegram + Gemini)
 
-Assistente pessoal para registrar o tempo gasto em cada Ordem de Serviço / SA ao longo do dia via **mensagens de texto** ou **áudio** no Telegram. Ao final do mês, gera relatório consolidado agrupado por SA e planilha Excel (`.xlsx`) pronta para copiar e colar no sistema corporativo.
-
----
-
-## 🛠️ Pré-requisitos e Configuração
-
-### 1. Obter Token do Telegram
-1. Abra o Telegram e procure por `@BotFather`.
-2. Envie `/newbot` e siga as instruções para definir o nome e username do seu bot.
-3. Copie o **Token HTTP API** gerado (ex: `123456789:ABCdefGhIJKlmNo...`).
-
-### 2. Obter Chave do Google Gemini (Gratuita)
-1. Acesse o [Google AI Studio](https://aistudio.google.com/).
-2. Clique em **Get API Key** e copie a sua chave.
-
-### 3. Configurar Variáveis de Ambiente
-Crie um arquivo `.env` na raiz da pasta do projeto (você pode duplicar o `.env.example`):
-```env
-TELEGRAM_BOT_TOKEN=seu_telegram_bot_token_aqui
-GEMINI_API_KEY=sua_gemini_api_key_aqui
-ALLOWED_TELEGRAM_USER_ID=
-```
-
-*(Opcional: deixe `ALLOWED_TELEGRAM_USER_ID` em branco no primeiro momento. Ao dar `/start` no bot, ele informará seu ID numérico. Depois você pode colá-lo aqui para garantir que ninguém mais acesse seu bot).*
+Assistente pessoal para o dia a dia de trabalho: responde a perguntas em áudio ou texto, consulta histórico de tarefas, gera scripts de **Daily Meeting**, captura **pendências e to-dos**, mantém **bloco de notas diário**, agenda **alarmes de ponto** e gera **relatórios consolidados de SAs em Excel (`.xlsx`)**.
 
 ---
 
-## 📦 Instalação
-
-Abra o terminal na pasta do projeto e instale as dependências:
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## ▶️ Como Rodar
-
-Execute o arquivo principal:
-```bash
-python bot.py
-```
-
----
-
-## 💬 Como Usar no Dia a Dia
-
-### Registrando Horas
-- **Texto Livre:**
-  - *"Passei a manhã inteira (4h) na SA 8912 refatorando as queries do banco"*
-  - *"Fiz 1h30 na SA 1024 alinhando os requisitos com o cliente"*
-  - *"Ontem trabalhei 2h na SA 5543 ajustando o layout"*
-- **Áudio:**
-  - Apenas mande um áudio no Telegram falando naturalmente: *"Ô bot, acabei de gastar duas horas na SA 4321 consertando o bug de login."*
-- O bot processa o texto/áudio, extrai com precisão a SA, horas e descrição, e devolve a confirmação com um botão para **Desfazer** se necessário.
+### Como Interagir no Dia a Dia (Áudio ou Texto)
+- **Perguntas Gerais e Dúvidas:**
+  - *"Quando foi a última vez que trabalhei na SA do refin?"*
+  - *"Quantas horas já lancei essa semana?"*
+  - *"Como tá o tempo hoje?"* ou *"Qual a previsão de chuva?"*
+- **Lançamento de Horas com Apelidos:**
+  - *"Gastei 3h no refin ajustando as queries do banco"* ➡️ Lança direto na SA associada.
+- **Bloco de Notas (Sem SA):**
+  - *"Participei da daily com o time e ajudei no deploy de homologação"* ➡️ Salva como diário cronológico.
+- **Captura Automática de Pendências:**
+  - *"Fiz 2h no refin, mas ainda preciso cobrar o Matheus sobre o schema do banco"* ➡️ Registra a SA e cria uma tarefa pendente em `/tarefas` com botão para concluir!
 
 ### Comandos Úteis
-- `/hoje` - Lista o resumo completo do dia (Horas nas SAs + Anotações do Bloco de Notas).
+- `/daily` - Gera a sua fala pronta para a reunião de Daily Meeting de hoje.
+- `/tarefas` (ou `/todo`) - Lista suas pendências com botão `[✅ Concluir]`.
+- `/escrever <ideia>` - Redige uma mensagem ou e-mail corporativo polido e profissional.
+- `/hoje` - Resumo do dia (Horas nas SAs + Bloco de Notas). Suporta `/hoje ontem` ou `/dia DD/MM/AAAA`.
 - `/notas` - Lista apenas as anotações do bloco de notas do dia.
-- `/mes` - Envia o resumo completo de horas acumuladas no mês (agrupado por SA) e um arquivo Excel (`.xlsx`) formatado.
+- `/mes` - Envia o resumo mensal agrupado por SA e a planilha Excel formatada.
 - `/apelidos` - Lista todos os projetos/apelidos vinculados a cada SA.
-- `/apelido <nome> <numero>` - Cadastra manualmente um apelido para uma SA (ex: `/apelido refin 96569`).
+- `/apelido <nome> <numero>` - Cadastra manualmente um apelido para uma SA.
 - `/alarmes` - Ativa ou pausa os alarmes automáticos de ponto no Telegram.
 - `/desfazer` - Remove o último lançamento registrado de SA.
 
