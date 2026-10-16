@@ -18,6 +18,8 @@ from telegram.ext import (
     filters,
 )
 
+from functools import wraps
+
 import database
 import ai_extractor
 import reports
@@ -43,12 +45,36 @@ def eh_usuario_autorizado(user_id: int) -> bool:
         return True
     return user_id == ALLOWED_USER_ID
 
+def restrito_para_dono(func):
+    """Decorator de segurança: bloqueia a execução caso o usuário não esteja autorizado."""
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = update.effective_user
+        if not user or not eh_usuario_autorizado(user.id):
+            logger.warning(f"Acesso negado para usuário não autorizado ID: {user.id if user else 'desconhecido'}")
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+async def safe_reply_text(message_or_update, text: str, reply_markup=None):
+    """Envia mensagem tentando Markdown primeiro; se a IA gerar entidades inválidas, reenvia em texto puro sem quebrar."""
+    target = message_or_update.message if hasattr(message_or_update, "message") and message_or_update.message else message_or_update
+    try:
+        return await target.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    except Exception as e:
+        logger.warning(f"Falha ao renderizar Markdown ({e}). Reenviando em texto plano...")
+        return await target.reply_text(text, reply_markup=reply_markup)
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /start de boas-vindas do CadêMinhasHoras."""
     user = update.effective_user
+    if not user:
+        return
     user_id = user.id
 
-    database.registrar_usuario_ativo(user_id)
+    # Segurança: só ativa alarmes se for o usuário autorizado (ou se ainda não foi configurado)
+    if eh_usuario_autorizado(user_id):
+        database.registrar_usuario_ativo(user_id)
 
     msg = (
         f"👋 Olá, *{user.first_name}*! Sou o *CadêMinhasHoras*, seu assistente pessoal de rotina e ponto.\n\n"
@@ -68,14 +94,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/apelidos` - Lista apelidos das suas SAs\n"
         "• `/alarmes` - Ativar/pausar alarmes de ponto"
     )
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, msg)
 
+@restrito_para_dono
 async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gera o script para a reunião de Daily Meeting com base no dia útil anterior e pendências."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     status_msg = await update.message.reply_text("☕ _Montando sua fala para a Daily de hoje..._", parse_mode=ParseMode.MARKDOWN)
 
     hoje = datetime.now(TIMEZONE_BR)
@@ -97,17 +121,15 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tarefas_pendentes=tarefas_pendentes
     )
     await status_msg.delete()
-    await update.message.reply_text(texto_daily, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, texto_daily)
 
+@restrito_para_dono
 async def tarefas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lista as tarefas e pendências em aberto com botões interativos."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     tarefas = database.obter_tarefas_pendentes(user_id)
     if not tarefas:
-        await update.message.reply_text("🎉 *Nenhuma pendência em aberto!* Você está com tudo em dia.", parse_mode=ParseMode.MARKDOWN)
+        await safe_reply_text(update, "🎉 *Nenhuma pendência em aberto!* Você está com tudo em dia.")
         return
 
     linhas = ["📋 *Suas Tarefas e Pendências em Aberto:*\n"]
@@ -117,20 +139,17 @@ async def tarefas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(f"✅ Concluir #{t['id']}", callback_data=f"concluirtarefa_{t['id']}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("\n".join(linhas), reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, "\n".join(linhas), reply_markup=reply_markup)
 
+@restrito_para_dono
 async def escrever_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Redige uma mensagem corporativa polida a partir de um texto informal."""
-    user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     args = context.args
     if not args:
-        await update.message.reply_text(
+        await safe_reply_text(
+            update,
             "ℹ️ *Como usar:* `/escrever <o que você quer comunicar>`\n\n"
-            "_Exemplo:_ `/escrever pede pro devops aprovar meu PR da SA 96569 pra liberar o deploy da sprint`",
-            parse_mode=ParseMode.MARKDOWN
+            "_Exemplo:_ `/escrever pede pro devops aprovar meu PR da SA 96569 pra liberar o deploy da sprint`"
         )
         return
 
@@ -138,22 +157,20 @@ async def escrever_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("✍️ _Redigindo mensagem corporativa..._", parse_mode=ParseMode.MARKDOWN)
     texto_redigido = ai_extractor.redigir_mensagem_corporativa(intencao)
     await status_msg.delete()
-    await update.message.reply_text(texto_redigido, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, texto_redigido)
 
+@restrito_para_dono
 async def alarmes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Permite ligar ou desligar os alarmes automáticos."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     args = context.args
     if args and args[0].lower() in ["off", "desligar", "pausar"]:
         database.alternar_alarmes(user_id, False)
-        await update.message.reply_text("⏸️ *Alarmes automáticos de ponto pausados!*", parse_mode=ParseMode.MARKDOWN)
+        await safe_reply_text(update, "⏸️ *Alarmes automáticos de ponto pausados!*")
         return
     elif args and args[0].lower() in ["on", "ligar", "ativar"]:
         database.alternar_alarmes(user_id, True)
-        await update.message.reply_text("▶️ *Alarmes automáticos ativados com sucesso!*", parse_mode=ParseMode.MARKDOWN)
+        await safe_reply_text(update, "▶️ *Alarmes automáticos ativados com sucesso!*")
         return
 
     keyboard = [
@@ -173,21 +190,19 @@ async def alarmes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `17:00` - Fim de expediente + Fechamento e Pendências\n\n"
         "Escolha abaixo ou use `/alarmes on` ou `/alarmes off`:"
     )
-    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, msg, reply_markup=reply_markup)
 
+@restrito_para_dono
 async def apelidos_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lista todos os apelidos e SAs cadastrados."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     itens = database.obter_apelidos(user_id)
     if not itens:
-        await update.message.reply_text(
+        await safe_reply_text(
+            update,
             "🧠 *Memória de Apelidos Vazia*\n\n"
             "Você pode cadastrar apelidos falando naturalmente (ex: _'A SA 96569 é o refin'_)\n"
-            "ou pelo comando:\n`/apelido refin 96569`",
-            parse_mode=ParseMode.MARKDOWN
+            "ou pelo comando:\n`/apelido refin 96569`"
         )
         return
 
@@ -203,19 +218,17 @@ async def apelidos_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         linhas.append(f"📌 *SA {sa}:* {', '.join(apelidos_list)}")
 
     linhas.append("\n💡 _Para adicionar mais um apelido:_ `/apelido <novo_apelido> <sa>`")
-    await update.message.reply_text("\n".join(linhas), parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, "\n".join(linhas))
 
+@restrito_para_dono
 async def cadastrar_apelido_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Permite cadastrar ou associar um apelido a uma SA: /apelido <termo> <numero_sa>"""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     args = context.args
     if not args or len(args) < 2:
-        await update.message.reply_text(
-            "ℹ️ *Uso correto:*\n`/apelido <termo_ou_apelido> <numero_sa>`\n\n_Exemplo:_ `/apelido refin 96569`",
-            parse_mode=ParseMode.MARKDOWN
+        await safe_reply_text(
+            update,
+            "ℹ️ *Uso correto:*\n`/apelido <termo_ou_apelido> <numero_sa>`\n\n_Exemplo:_ `/apelido refin 96569`"
         )
         return
 
@@ -223,18 +236,16 @@ async def cadastrar_apelido_command(update: Update, context: ContextTypes.DEFAUL
     sa_id = args[-1].strip()
 
     database.salvar_apelido(user_id, apelido, sa_id)
-    await update.message.reply_text(
+    await safe_reply_text(
+        update,
         f"✅ *Apelido salvo com sucesso!*\n"
-        f"Quando você falar `{apelido}`, saberei que é a *SA {sa_id}*.",
-        parse_mode=ParseMode.MARKDOWN
+        f"Quando você falar `{apelido}`, saberei que é a *SA {sa_id}*."
     )
 
+@restrito_para_dono
 async def hoje_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Exibe o resumo das atividades registradas hoje ou em uma data específica (SAs + Bloco de Notas)."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     data_consulta = datetime.now(TIMEZONE_BR)
     titulo_data = data_consulta.strftime('%d/%m/%Y')
     hoje_str = data_consulta.strftime("%Y-%m-%d")
@@ -257,7 +268,7 @@ async def hoje_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hoje_str = d_parsed.strftime("%Y-%m-%d")
                 titulo_data = d_parsed.strftime("%d/%m/%Y")
             except Exception:
-                await update.message.reply_text("⚠️ Formato de data inválido! Use `/hoje`, `/hoje ontem` ou `/hoje DD/MM/AAAA`.", parse_mode=ParseMode.MARKDOWN)
+                await safe_reply_text(update, "⚠️ Formato de data inválido! Use `/hoje`, `/hoje ontem` ou `/hoje DD/MM/AAAA`.")
                 return
 
     registros = database.obter_registros_dia(user_id, hoje_str)
@@ -268,34 +279,30 @@ async def hoje_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         titulo=f"Rastro Diário ({titulo_data})",
         notas=notas
     )
-    await update.message.reply_text(texto, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, texto)
 
+@restrito_para_dono
 async def notas_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Exibe apenas as anotações do bloco de notas do dia."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     hoje_str = datetime.now(TIMEZONE_BR).strftime("%Y-%m-%d")
     notas = database.obter_notas_dia(user_id, hoje_str)
     texto = reports.formatar_notas_texto(notas, datetime.now(TIMEZONE_BR).strftime("%d/%m/%Y"))
-    await update.message.reply_text(texto, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, texto)
 
+@restrito_para_dono
 async def mes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gera o relatório do mês e anexa o arquivo Excel."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     ano_mes = datetime.now(TIMEZONE_BR).strftime("%Y-%m")
     registros = database.obter_registros_mes(user_id, ano_mes)
 
     if not registros:
-        await update.message.reply_text(f"Nenhum registro de SA encontrado para o mês {ano_mes}.")
+        await safe_reply_text(update, f"Nenhum registro de SA encontrado para o mês {ano_mes}.")
         return
 
     texto = reports.formatar_relatorio_texto(registros, titulo=f"Consolidado Mensal ({datetime.now(TIMEZONE_BR).strftime('%m/%Y')})")
-    await update.message.reply_text(texto, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply_text(update, texto)
 
     nome_arquivo = f"Horas_{ano_mes}_{user_id}.xlsx"
     reports.gerar_planilha_excel(registros, nome_arquivo)
@@ -312,26 +319,25 @@ async def mes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+@restrito_para_dono
 async def desfazer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Desfaz o último registro de SA do usuário."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     ultimo = database.obter_ultimo_registro(user_id)
     if not ultimo:
-        await update.message.reply_text("Nenhum registro para desfazer.")
+        await safe_reply_text(update, "Nenhum registro para desfazer.")
         return
 
     database.deletar_registro(ultimo["id"], user_id)
-    await update.message.reply_text(
+    await safe_reply_text(
+        update,
         f"🗑️ *Registro removido:*\n"
         f"• SA: `{ultimo['sa_id']}`\n"
         f"• Horas: `{ultimo['horas']}h`\n"
-        f"• Descrição: {ultimo['descricao']}",
-        parse_mode=ParseMode.MARKDOWN
+        f"• Descrição: {ultimo['descricao']}"
     )
 
+@restrito_para_dono
 async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Trata cliques nos botões inline."""
     query = update.callback_query
@@ -368,12 +374,10 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         database.alternar_alarmes(user_id, False)
         await query.edit_message_text("🔕 *Alarmes automáticos de ponto pausados!*", parse_mode=ParseMode.MARKDOWN)
 
+@restrito_para_dono
 async def processar_mensagem_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Recebe mensagens de texto e atua como assistente pessoal ou registrador de horas/tarefas."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     database.registrar_usuario_ativo(user_id)
     texto_usuario = update.message.text
     status_msg = await update.message.reply_text("⏳ _Pensando..._", parse_mode=ParseMode.MARKDOWN)
@@ -393,22 +397,22 @@ async def processar_mensagem_texto(update: Update, context: ContextTypes.DEFAULT
 
         # 1. Se for uma pergunta ou conversa direta
         if resultado.eh_pergunta_ou_conversa and resultado.resposta_conversacional:
-            await update.message.reply_text(resultado.resposta_conversacional, parse_mode=ParseMode.MARKDOWN)
+            await safe_reply_text(update, resultado.resposta_conversacional)
             return
 
         # 2. Se identificou novos apelidos
         if resultado.novos_apelidos:
             for item in resultado.novos_apelidos:
                 database.salvar_apelido(user_id, item.apelido, item.sa)
-                await update.message.reply_text(
-                    f"🧠 *Novo apelido aprendido!*\nAssociei `{item.apelido}` ➡️ *SA {item.sa}*.",
-                    parse_mode=ParseMode.MARKDOWN
+                await safe_reply_text(
+                    update,
+                    f"🧠 *Novo apelido aprendido!*\nAssociei `{item.apelido}` ➡️ *SA {item.sa}*."
                 )
 
         # 3. Se houver dúvidas específicas de SA
         if resultado.duvidas_sa:
             for duvida in resultado.duvidas_sa:
-                await update.message.reply_text(f"❓ *Dúvida sobre a SA:*\n{duvida}", parse_mode=ParseMode.MARKDOWN)
+                await safe_reply_text(update, f"❓ *Dúvida sobre a SA:*\n{duvida}")
 
         # 4. Registros de SAs
         for item in resultado.registros:
@@ -432,7 +436,7 @@ async def processar_mensagem_texto(update: Update, context: ContextTypes.DEFAULT
                 f"⏱️ *Horas:* `{item.horas}h`\n"
                 f"📝 *Descrição:* {item.descricao}"
             )
-            await update.message.reply_text(msg_confirmacao, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+            await safe_reply_text(update, msg_confirmacao, reply_markup=reply_markup)
 
         # 5. Modo Bloco de Notas: Tarefas sem SA
         if resultado.notas_gerais:
@@ -447,7 +451,7 @@ async def processar_mensagem_texto(update: Update, context: ContextTypes.DEFAULT
                     f"⏰ *Horário:* `{hora_atual}`\n"
                     f"📌 *Anotação:* {nota}"
                 )
-                await update.message.reply_text(msg_nota, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+                await safe_reply_text(update, msg_nota, reply_markup=reply_markup)
 
         # 6. Captura de Pendências / To-Dos futuros
         if resultado.pendencias_futuras:
@@ -455,25 +459,23 @@ async def processar_mensagem_texto(update: Update, context: ContextTypes.DEFAULT
                 tarefa_id = database.inserir_tarefa(user_id, p, data_ref)
                 keyboard = [[InlineKeyboardButton("✅ Concluir", callback_data=f"concluirtarefa_{tarefa_id}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(
+                await safe_reply_text(
+                    update,
                     f"📌 *Nova Pendência Anotada:*\n{p}\n\n_(Use `/tarefas` para acompanhar)_",
-                    reply_markup=reply_markup,
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=reply_markup
                 )
 
         if resultado.observacoes:
-            await update.message.reply_text(f"ℹ️ *Nota:* {resultado.observacoes}", parse_mode=ParseMode.MARKDOWN)
+            await safe_reply_text(update, f"ℹ️ *Nota:* {resultado.observacoes}")
 
     except Exception as e:
         logger.error(f"Erro ao processar mensagem de texto: {e}", exc_info=True)
         await status_msg.edit_text(f"❌ Ocorreu um erro ao processar: {str(e)}")
 
+@restrito_para_dono
 async def processar_mensagem_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Recebe mensagens de áudio e atua como assistente pessoal ou registrador."""
     user_id = update.effective_user.id
-    if not eh_usuario_autorizado(user_id):
-        return
-
     database.registrar_usuario_ativo(user_id)
     voice = update.message.voice or update.message.audio
     if not voice:
@@ -500,22 +502,22 @@ async def processar_mensagem_audio(update: Update, context: ContextTypes.DEFAULT
 
         # 1. Pergunta ou conversa respondida
         if resultado.eh_pergunta_ou_conversa and resultado.resposta_conversacional:
-            await update.message.reply_text(resultado.resposta_conversacional, parse_mode=ParseMode.MARKDOWN)
+            await safe_reply_text(update, resultado.resposta_conversacional)
             return
 
         # 2. Novos apelidos
         if resultado.novos_apelidos:
             for item in resultado.novos_apelidos:
                 database.salvar_apelido(user_id, item.apelido, item.sa)
-                await update.message.reply_text(
-                    f"🧠 *Novo apelido aprendido!*\nAssociei `{item.apelido}` ➡️ *SA {item.sa}*.",
-                    parse_mode=ParseMode.MARKDOWN
+                await safe_reply_text(
+                    update,
+                    f"🧠 *Novo apelido aprendido!*\nAssociei `{item.apelido}` ➡️ *SA {item.sa}*."
                 )
 
         # 3. Dúvidas
         if resultado.duvidas_sa:
             for duvida in resultado.duvidas_sa:
-                await update.message.reply_text(f"❓ *Dúvida sobre a SA:*\n{duvida}", parse_mode=ParseMode.MARKDOWN)
+                await safe_reply_text(update, f"❓ *Dúvida sobre a SA:*\n{duvida}")
 
         # 4. Lançamentos de SAs
         for item in resultado.registros:
@@ -539,7 +541,7 @@ async def processar_mensagem_audio(update: Update, context: ContextTypes.DEFAULT
                 f"⏱️ *Horas:* `{item.horas}h`\n"
                 f"📝 *Descrição:* {item.descricao}"
             )
-            await update.message.reply_text(msg_confirmacao, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+            await safe_reply_text(update, msg_confirmacao, reply_markup=reply_markup)
 
         # 5. Modo Bloco de Notas: Tarefas sem SA
         if resultado.notas_gerais:
@@ -554,7 +556,7 @@ async def processar_mensagem_audio(update: Update, context: ContextTypes.DEFAULT
                     f"⏰ *Horário:* `{hora_atual}`\n"
                     f"📌 *Anotação:* {nota}"
                 )
-                await update.message.reply_text(msg_nota, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+                await safe_reply_text(update, msg_nota, reply_markup=reply_markup)
 
         # 6. Pendências capturadas no áudio
         if resultado.pendencias_futuras:
@@ -562,14 +564,14 @@ async def processar_mensagem_audio(update: Update, context: ContextTypes.DEFAULT
                 tarefa_id = database.inserir_tarefa(user_id, p, data_ref)
                 keyboard = [[InlineKeyboardButton("✅ Concluir", callback_data=f"concluirtarefa_{tarefa_id}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(
+                await safe_reply_text(
+                    update,
                     f"📌 *Nova Pendência Anotada (via Áudio):*\n{p}\n\n_(Use `/tarefas` para acompanhar)_",
-                    reply_markup=reply_markup,
-                    parse_mode=ParseMode.MARKDOWN
+                    reply_markup=reply_markup
                 )
 
         if resultado.observacoes:
-            await update.message.reply_text(f"ℹ️ *Nota:* {resultado.observacoes}", parse_mode=ParseMode.MARKDOWN)
+            await safe_reply_text(update, f"ℹ️ *Nota:* {resultado.observacoes}")
 
     except Exception as e:
         logger.error(f"Erro ao processar áudio: {e}", exc_info=True)

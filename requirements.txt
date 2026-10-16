@@ -5,3 +5,4 @@ openpyxl>=3.1.2
 pydantic>=2.0
 uvicorn>=0.30.0
 fastapi>=0.112.0
+pytest>=8.0.0

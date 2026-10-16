@@ -6,4 +6,4 @@ temp_voice_*.oga
 *.xlsx
 horas.db
 .agent/
-
+.pytest_cache/
